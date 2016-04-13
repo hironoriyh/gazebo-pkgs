@@ -5,7 +5,17 @@
 #include <gazebo/physics/SphereShape.hh>
 #include <gazebo/physics/CylinderShape.hh>
 #include <gazebo/physics/Collision.hh>
+#include <gazebo/physics/MeshShape.hh>
 #include <gazebo/physics/World.hh>
+
+#include <gazebo/common/Plugin.hh>
+#include <gazebo/common/Events.hh>
+#include <gazebo/common/common.hh>
+
+#include <algorithm>
+#include <assert.h>
+#include <boost/bind.hpp>
+#include <boost/thread/mutex.hpp>
 
 #define DEFAULT_PUBLISH_OBJECTS false
 #define DEFAULT_WORLD_OBJECTS_TOPIC "world/objects"
@@ -102,6 +112,85 @@ void GazeboObjectInfo::onWorldUpdate() {
     reGenerateObjects=false;
 }
 
+shape_msgs::Mesh * GazeboObjectInfo::getMesh(physics::CollisionPtr& c){
+    shape_msgs::Mesh tri;
+    msgs::Geometry geom;
+    physics::ShapePtr shape=c->GetShape();
+    shape->FillMsg(geom);
+
+    if(geom.has_mesh()){
+    	 //const gazebo::physics::MeshShape * mesh_shape = dynamic_cast<const physics::MeshShape*>(shape.get());
+       // const gazebo::physics::BoxShape * box=dynamic_cast<const physics::BoxShape*>(shape.get());
+
+    	boost::shared_ptr<gazebo::physics::MeshShape> mesh_shape = boost::dynamic_pointer_cast<gazebo::physics::MeshShape>(shape);
+    	 std::string name_ = mesh_shape->GetName();
+    	 std::string uri = mesh_shape->GetMeshURI();
+    	 const gazebo::common::Mesh *mesh = gazebo::common::MeshManager::Instance()->GetMesh(uri);
+         unsigned n_submeshes = mesh->GetSubMeshCount();
+
+         for(unsigned m=0; m < n_submeshes; m++) {
+
+           const gazebo::common::SubMesh *submesh = mesh->GetSubMesh(m);
+           unsigned n_vertices = submesh->GetVertexCount();
+
+           switch(submesh->GetPrimitiveType())
+           {
+             case gazebo::common::SubMesh::POINTS:
+             case gazebo::common::SubMesh::LINES:
+             case gazebo::common::SubMesh::LINESTRIPS:
+               // These aren't supported
+               break;
+             case gazebo::common::SubMesh::TRIANGLES:
+             	 {
+                     shape_msgs::Mesh mesh_msg;
+                     mesh_msg.vertices.resize(n_vertices);
+                     mesh_msg.triangles.resize(n_vertices/3);
+
+                     for(size_t v=0; v < n_vertices; v++) {
+                         const int index = submesh->GetIndex(v);
+                         const gazebo::math::Vector3 vertex = submesh->GetVertex(v);
+
+                         mesh_msg.vertices[index].x = vertex.x;
+                         mesh_msg.vertices[index].y = vertex.y;
+                         mesh_msg.vertices[index].z = vertex.z;
+
+                         mesh_msg.triangles[v/3].vertex_indices[v%3] = index;
+                     }
+                     tri = mesh_msg;
+                     break;
+
+             	 }
+             case gazebo::common::SubMesh::TRISTRIPS:
+             {
+                 shape_msgs::Mesh mesh_msg;
+                 mesh_msg.vertices.resize(n_vertices);
+                 mesh_msg.triangles.resize(n_vertices-2);
+
+                 for(size_t v=0; v < n_vertices; v++) {
+                   const int index = submesh->GetIndex(v);
+                   const gazebo::math::Vector3 vertex = submesh->GetVertex(v);
+
+                   mesh_msg.vertices[index].x = vertex.x;
+                   mesh_msg.vertices[index].y = vertex.y;
+                   mesh_msg.vertices[index].z = vertex.z;
+
+                   if(v < n_vertices-2) mesh_msg.triangles[v].vertex_indices[0] = index;
+                   if(v > 0 && v < n_vertices-1) mesh_msg.triangles[v-1].vertex_indices[1] = index;
+                   if(v > 1) mesh_msg.triangles[v-2].vertex_indices[2] = index;
+                 }
+                 tri = mesh_msg;
+               break;
+             }
+             case gazebo::common::SubMesh::TRIFANS:
+               // Unsupported
+               gzerr << "TRIFANS not supported yet." << std::endl;
+               break;
+           };
+         }
+
+    }
+    return new shape_msgs::Mesh(tri);
+}
 
 shape_msgs::SolidPrimitive * GazeboObjectInfo::getSolidPrimitive(physics::CollisionPtr& c) {
     shape_msgs::SolidPrimitive solid;
@@ -157,9 +246,9 @@ shape_msgs::SolidPrimitive * GazeboObjectInfo::getSolidPrimitive(physics::Collis
         }
         solid.type=shape_msgs::SolidPrimitive::BOX;
         solid.dimensions.resize(3);
-        solid.dimensions[shape_msgs::SolidPrimitive::BOX_X]=bb.x;
-        solid.dimensions[shape_msgs::SolidPrimitive::BOX_Y]=bb.y;
-        solid.dimensions[shape_msgs::SolidPrimitive::BOX_Z]=bb.z;
+        solid.dimensions[shape_msgs::SolidPrimitive::BOX_X]=bb.x*0.8;
+        solid.dimensions[shape_msgs::SolidPrimitive::BOX_Y]=bb.y*0.8;
+        solid.dimensions[shape_msgs::SolidPrimitive::BOX_Z]=bb.z*0.8;
     }
     //ROS_INFO_STREAM("Solid computed."<<std::endl<<solid);
     return new shape_msgs::SolidPrimitive(solid);
@@ -211,23 +300,31 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
             pose.orientation.z=coll_pose.rot.z;
             pose.orientation.w=coll_pose.rot.w;
 
-            obj.primitive_poses.push_back(pose);
+            if(c->GetShape()->HasType(gazebo::physics::Base::MESH_SHAPE)) obj.mesh_poses.push_back(pose);
+            if(c->GetShape()->HasType(gazebo::physics::Base::BOX_SHAPE)) obj.primitive_poses.push_back(pose);
         
             if (!origin_init)
             {
                 obj.origin = pose;
             }
-    
+
             if (include_shape) {
+            	if(c->GetShape()->HasType(gazebo::physics::Base::MESH_SHAPE)){
+            		ROS_INFO_ONCE("Mesh was recognized");
+            		shape_msgs::Mesh * mesh = getMesh(c);
+            		obj.meshes.push_back(*mesh);
+            		delete mesh;
+            	}
 
-                shape_msgs::SolidPrimitive * solid=getSolidPrimitive(c);
-                if (!solid) {
-                    ROS_WARN("Skipping coll %s of link %s of model %s, could not get SolidPrimitive. ",c->GetName().c_str(),linkName.c_str(),obj.name.c_str());
-                    continue;
-                }
-
-                obj.primitives.push_back(*solid);
-                delete solid;
+            	if(c->GetShape()->HasType(gazebo::physics::Base::BOX_SHAPE)){
+            		shape_msgs::SolidPrimitive * solid = getSolidPrimitive(c);
+            		obj.primitives.push_back(*solid);
+                    if (!solid) {
+                        ROS_WARN("Skipping coll %s of link %s of model %s, could not get SolidPrimitive. ",c->GetName().c_str(),linkName.c_str(),obj.name.c_str());
+                        continue;
+                    }
+                    delete solid;
+            	}
                 obj.content=GazeboObjectInfo::ObjectMsg::SHAPE;
             }else {
                 obj.content=GazeboObjectInfo::ObjectMsg::POSE;
