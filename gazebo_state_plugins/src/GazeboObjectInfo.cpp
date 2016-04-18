@@ -31,7 +31,7 @@ using gazebo::GazeboObjectInfo;
 
 GZ_REGISTER_WORLD_PLUGIN(GazeboObjectInfo)
 
-GazeboObjectInfo::GazeboObjectInfo() : 
+GazeboObjectInfo::GazeboObjectInfo() :
     WorldPlugin(){
     reGenerateObjects=true;
 }
@@ -44,14 +44,14 @@ void GazeboObjectInfo::Load(physics::WorldPtr _world, sdf::ElementPtr _sdf){
 
     node.param<std::string>("world_objects_topic", WORLD_OBJECTS_TOPIC, DEFAULT_WORLD_OBJECTS_TOPIC);
     ROS_INFO("GazeboObjInfo: Got objects topic name: <%s>", WORLD_OBJECTS_TOPIC.c_str());
-    
+
     node.param<std::string>("request_object_service", REQUEST_OBJECTS_TOPIC, DEFAULT_REQUEST_OBJECTS_TOPIC);
     ROS_INFO("GazeboObjInfo: Got objects topic name: <%s>", REQUEST_OBJECTS_TOPIC.c_str());
-    
+
     node.param<std::string>("objects_frame_id", ROOT_FRAME_ID, DEFAULT_ROOT_FRAME_ID);
     ROS_INFO("GazeboObjInfo: Got objects frame id: <%s>", ROOT_FRAME_ID.c_str());
-    
-    world=_world;    
+
+    world=_world;
 
     if (PUBLISH_OBJECTS){
         update_connection = event::Events::ConnectWorldUpdateBegin(boost::bind(&GazeboObjectInfo::onWorldUpdate, this));
@@ -62,6 +62,19 @@ void GazeboObjectInfo::Load(physics::WorldPtr _world, sdf::ElementPtr _sdf){
     publishTimer=node.createTimer(rate,&GazeboObjectInfo::advertEvent, this);
 
     request_object_srv = node.advertiseService(REQUEST_OBJECTS_TOPIC, &GazeboObjectInfo::requestObject,this);
+    request_object_static = node.advertiseService("world/object_static", &GazeboObjectInfo::requestStatic,this);
+
+}
+
+bool GazeboObjectInfo::requestStatic(motion_execution_msgs::SetObjectStatic::Request  &req, motion_execution_msgs::SetObjectStatic::Response &res)
+{
+  std::string modelName=req.name;
+  physics::ModelPtr model=world->GetModel(modelName);
+  model-> SetStatic(req.set_static);
+
+  if(req.set_static) ROS_INFO("model %s was set with static", modelName.c_str());
+  else ROS_INFO("model %s was set with active", modelName.c_str());
+  return true;
 }
 
 bool GazeboObjectInfo::requestObject(object_msgs::ObjectInfo::Request &req, object_msgs::ObjectInfo::Response &res) {
@@ -75,7 +88,7 @@ bool GazeboObjectInfo::requestObject(object_msgs::ObjectInfo::Request &req, obje
         res.error_code=object_msgs::ObjectInfo::Response::OBJECT_NOT_FOUND;
         return true;
     }
-        
+
     res.error_code=object_msgs::ObjectInfo::Response::NO_ERROR;
     res.success=true;
     res.object=createBoundingBoxObject(model,req.get_geometry);
@@ -261,7 +274,7 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
 
     physics::Link_V links=model->GetLinks();
     physics::Link_V::iterator l_it;
-        
+
     obj.name=model->GetName();
     obj.header.stamp=ros::Time::now();
     obj.header.frame_id=ROOT_FRAME_ID;
@@ -271,9 +284,9 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
     for (l_it=links.begin(); l_it!=links.end(); ++l_it)
     {
         physics::LinkPtr link=*l_it;
-        
+
         std::string linkName=link->GetName();
-        
+
         math::Pose link_pose=link->GetWorldPose();
         //ROS_INFO("Link for model %s: %s, pos %f %f %f",model->GetName().c_str(),link->GetName().c_str(),link_pose.pos.x,link_pose.pos.y,link_pose.pos.z);
         //ROS_INFO("Link found for model %s: %s",model->GetName().c_str(),link->GetName().c_str());
@@ -283,7 +296,7 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
         for (cit=colls.begin(); cit!=colls.end(); ++cit)
         {
             physics::CollisionPtr c=*cit;
-            
+
             math::Pose rel_pose=c->GetRelativePose();
 
             //ROS_INFO("Collision for model %s: %s, pos %f %f %f",model->GetName().c_str(),link->GetName().c_str(),rel_pose.pos.x,rel_pose.pos.y,rel_pose.pos.z);
@@ -302,7 +315,7 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
 
             if(c->GetShape()->HasType(gazebo::physics::Base::MESH_SHAPE)) obj.mesh_poses.push_back(pose);
             if(c->GetShape()->HasType(gazebo::physics::Base::BOX_SHAPE)) obj.primitive_poses.push_back(pose);
-        
+
             if (!origin_init)
             {
                 obj.origin = pose;
@@ -338,5 +351,3 @@ GazeboObjectInfo::ObjectMsg GazeboObjectInfo::createBoundingBoxObject(physics::M
 
     return obj;
 }
-
-
