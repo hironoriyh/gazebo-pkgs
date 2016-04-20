@@ -70,7 +70,9 @@ bool GazeboObjectInfo::requestStatic(motion_execution_msgs::SetObjectStatic::Req
 {
   std::string modelName=req.name;
   physics::ModelPtr model=world->GetModel(modelName);
-  model-> SetStatic(req.set_static);
+  //model-> SetStatic(req.set_static);
+  model->GetLink("base_link")->SetKinematic(req.set_static);
+  res.success=true;
 
   if(req.set_static) ROS_INFO("model %s was set with static", modelName.c_str());
   else ROS_INFO("model %s was set with active", modelName.c_str());
